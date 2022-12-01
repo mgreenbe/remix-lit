@@ -1,33 +1,13 @@
-import { RouterState, Router } from "@remix-run/router";
-import { useHref, useNavigate } from "./hooks";
-import { Navigator, Route, RemixBag, LinkNavigateOptions } from "./types";
+import { RouterState, Router, FormMethod } from "@remix-run/router";
+import { Route, LinkNavigateOptions } from "./types";
 import { nothing, render, TemplateResult } from "lit";
-import { LimitedMouseEvent, shouldProcessLinkClick } from "./dom";
+import { shouldProcessLinkClick } from "./dom";
 
 export function mount(router: Router, target: HTMLElement): void {
-  // from RouterProvider, react-router/lib/components.tsx
-  const navigator: Navigator = {
-    createHref: router.createHref,
-    go: (n) => router.navigate(n),
-    push: (to, state, opts) =>
-      router.navigate(to, {
-        state,
-        preventScrollReset: opts?.preventScrollReset,
-      }),
-    replace: (to, state, opts) =>
-      router.navigate(to, {
-        replace: true,
-        state,
-        preventScrollReset: opts?.preventScrollReset,
-      }),
-  };
-  let basename = router.basename || "/";
-
-  const linkClickHandler = (
-    event: MouseEvent, // is this legit?
+  function linkClickHandler(
+    event: MouseEvent,
     opts?: LinkNavigateOptions
-  ): void => {
-    event.preventDefault();
+  ): void {
     let anchor = event
       .composedPath()
       .find(
@@ -35,50 +15,68 @@ export function mount(router: Router, target: HTMLElement): void {
           element instanceof HTMLAnchorElement
       );
     if (anchor && shouldProcessLinkClick(event, anchor.target)) {
+      event.preventDefault();
       router.navigate(anchor.href, opts);
     }
-  };
+  }
+  target.addEventListener("click", linkClickHandler);
 
-  function renderRoutes(state: RouterState) {
-    console.log(state);
-    const {
-      location,
-      matches,
-      navigation,
-      loaderData: routeLoaderData,
-    } = state;
-    let template: TemplateResult | typeof nothing = nothing;
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const route: Route = matches[i].route;
-      if (route.element === undefined) {
-        throw new Error("Every route needs an element.");
+  function submitHandler(e: SubmitEvent) {
+    console.log("Submitted!");
+    e.preventDefault();
+    const form = e.target;
+    if (!(form instanceof HTMLFormElement)) {
+      throw new Error(
+        "(submit handler) event target must be an instance of HTMLFormElement."
+      );
+    }
+    const action =
+      form.getAttribute("action") ?? router.state.location.pathname;
+    const formData = new FormData(form);
+    const name = e.submitter?.getAttribute("name");
+    if (name) {
+      const value = e.submitter?.getAttribute("value") ?? "";
+      formData.set(name, value);
+    }
+
+    const formMethod = (form.getAttribute("method") ?? "get") as FormMethod;
+    if (formMethod === "get") {
+      const search = new URLSearchParams(formData as any).toString(); //  👎
+      router.navigate({ pathname: action, search });
+    }
+
+    const opts = { formData, formMethod };
+
+    const fetcherKey = form.dataset.fetcherKey;
+    if (fetcherKey === undefined) {
+      router.navigate(action, opts);
+    } else {
+      const routeId = form.dataset.routeId;
+      if (routeId === undefined) {
+        throw new Error("When fetcherKey is defined, routeId must be, too.");
       }
-      const loaderData =
-        route.id === undefined ? undefined : routeLoaderData[route.id];
-      const navigate = useNavigate(
-        basename,
-        navigator,
-        location,
-        matches.slice(0, i + 1)
-      );
-      const href = useHref(
-        basename,
-        navigator,
-        matches.slice(0, i + 1),
-        location
-      );
-      const r: RemixBag = {
-        location,
-        loaderData,
-        routeLoaderData,
-        navigate,
-        navigation,
-        href,
-        linkHandler: linkClickHandler,
-      };
-      template = route.element(template, r);
+      router.fetch(fetcherKey, routeId, action, opts);
+    }
+  }
+  target.addEventListener("submit", submitHandler);
+
+  function renderMatches(routerState: RouterState) {
+    console.log(routerState);
+
+    let template: TemplateResult | typeof nothing = nothing;
+    for (let i = routerState.matches.length - 1; i >= 0; i--) {
+      const match = routerState.matches[i];
+      const route: Route = match.route;
+      if (route.element !== undefined) {
+        template = route.element(template, {
+          routerState,
+          match: routerState.matches[i],
+          navigate: router.navigate,
+          fetch: router.fetch,
+        });
+      }
     }
     render(template, target);
   }
-  router.subscribe(renderRoutes);
+  router.subscribe(renderMatches);
 }
